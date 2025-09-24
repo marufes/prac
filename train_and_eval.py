@@ -143,3 +143,14 @@ def visualize_edges(mask):
     plt.imshow(edges, cmap='gray')
     plt.axis('off')
     plt.show()
+
+if __name__ == "__main__":
+    # Example: create a dummy mask and visualize edges
+    dummy_mask = torch.randint(0, 2, (128, 128))
+    visualize_edges(dummy_mask)
+
+    # Example: test criterion with dummy input and target
+    dummy_input = {"out": torch.randn(1, 2, 128, 128)}
+    dummy_target = torch.randint(0, 2, (1, 128, 128))
+    loss = criterion(dummy_input, dummy_target)
+    print("Dummy loss:", loss.item())
