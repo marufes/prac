@@ -7,29 +7,18 @@ from torch import nn
 import torch.nn.functional
 import distributed_utils as utils
 from loss_function import build_target, Focal_Loss, CE_Loss, Dice_loss
-
-def criterion(inputs, target, num_classes: int = 2, focal_loss: bool = True, dice_loss: bool = True):
-    losses = {}
-    
 import cv2
 import numpy as np
 import matplotlib.pyplot as plt
 
-# --- Sobel gradients ---
-img=target
-sobelx = cv2.Sobel(img, cv2.CV_64F, 1, 0, ksize=3)
-sobely = cv2.Sobel(img, cv2.CV_64F, 0, 1, ksize=3)
 
-grad_mag = np.sqrt(sobelx**2 + sobely**2)
-grad_mag = cv2.normalize(grad_mag, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+def criterion(inputs, target, num_classes: int = 2, focal_loss: bool = True, dice_loss: bool = True):
+    """
+    Compute training losses (Focal + CE + Dice).
+    """
+    losses = {}
 
-# --- Threshold to keep strong edges only ---
-_, edges = cv2.threshold(grad_mag, 50, 255, cv2.THRESH_BINARY)
-
-plt.title("Gradient Magnitude (Sobel)")
-plt.imshow(edges, cmap='gray')
-plt.axis('off')
-for name, x in inputs.items():
+    for name, x in inputs.items():
         if focal_loss:
             loss = Focal_Loss(x, target, ignore_index=255)
         else:
@@ -37,11 +26,14 @@ for name, x in inputs.items():
 
         if dice_loss:
             dice_target = build_target(target, num_classes, ignore_index=255)
-            dice_loss = Dice_loss(x, dice_target)
-            loss = loss + dice_loss
+            dice_loss_val = Dice_loss(x, dice_target)
+            loss = loss + dice_loss_val
 
         losses[name] = loss
-        return losses['out']
+
+    return losses['out']
+
+
 def evaluate(model, data_loader, device, num_classes):
     model.eval()
     confmat = utils.ConfusionMatrix(num_classes)
@@ -52,21 +44,20 @@ def evaluate(model, data_loader, device, num_classes):
         for image, target in metric_logger.log_every(data_loader, 100, header):
             image, target = image.to(device), target.to(device)
             output = model(image)
-            loss = criterion(output, target, num_classes=2, focal_loss=True, dice_loss=True)
+            loss = criterion(output, target, num_classes=num_classes, focal_loss=True, dice_loss=True)
 
             output1 = output['out']
-
             confmat.update(target.flatten(), output1.argmax(1).flatten())
-
             metric_logger.update(loss=loss.item())
     return metric_logger.meters["loss"].global_avg, confmat
+
 
 def train_one_epoch(model, optimizer, data_loader, device, epoch, lr_scheduler, print_freq=100, scaler=None):
     model.train()
     metric_logger = utils.MetricLogger(delimiter="  ")
     metric_logger.add_meter('lr', utils.SmoothedValue(window_size=1, fmt='{value:.6f}'))
     metric_logger.add_meter('loss', utils.SmoothedValue(window_size=1, fmt='{value:.6f}'))
-    header = 'Epoch: [{}]'.format(epoch)
+    header = f'Epoch: [{epoch}]'
 
     for image, target in metric_logger.log_every(data_loader, print_freq, header):
         image, target = image.to(device), target.to(device)
@@ -84,11 +75,11 @@ def train_one_epoch(model, optimizer, data_loader, device, epoch, lr_scheduler, 
             optimizer.step()
 
         lr_scheduler.step()
-
         lr = optimizer.param_groups[0]["lr"]
         metric_logger.update(loss=loss.item(), lr=lr)
 
     return metric_logger.meters["loss"].global_avg, lr
+
 
 def create_lr_scheduler(optimizer,
                         num_step: int,
@@ -97,17 +88,45 @@ def create_lr_scheduler(optimizer,
                         warmup_epochs=1,
                         warmup_factor=1e-3):
     assert num_step > 0 and epochs > 0
-    if warmup is False:
+    if not warmup:
         warmup_epochs = 0
 
     def f(x):
-
-        if warmup is True and x <= (warmup_epochs * num_step):
+        if warmup and x <= (warmup_epochs * num_step):
             alpha = float(x) / (warmup_epochs * num_step)
-
             return warmup_factor * (1 - alpha) + alpha
         else:
-
             return (1 - (x - warmup_epochs * num_step) / ((epochs - warmup_epochs) * num_step)) ** 0.9
 
     return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=f)
+
+
+########################################################################################################################
+# Optional: helper for visualizing Sobel edges (never inside criterion)
+########################################################################################################################
+def visualize_edges(mask):
+    """
+    Visualize Sobel edges of a target or predicted mask.
+    """
+    if isinstance(mask, torch.Tensor):
+        mask = mask.detach().cpu().numpy().astype(np.uint8)
+
+    sobelx = cv2.Sobel(mask, cv2.CV_64F, 1, 0, ksize=3)
+    sobely = cv2.Sobel(mask, cv2.CV_64F, 0, 1, ksize=3)
+
+    grad_mag = np.sqrt(sobelx ** 2 + sobely ** 2)
+    grad_mag = cv2.normalize(grad_mag, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+
+    _, edges = cv2.threshold(grad_mag, 50, 255, cv2.THRESH_BINARY)
+
+    plt.figure(figsize=(10, 4))
+    plt.subplot(1, 2, 1)
+    plt.title("Gradient Magnitude (Sobel)")
+    plt.imshow(grad_mag, cmap='gray')
+    plt.axis('off')
+
+    plt.subplot(1, 2, 2)
+    plt.title("Thresholded Edges")
+    plt.imshow(edges, cmap='gray')
+    plt.axis('off')
+    plt.show()
